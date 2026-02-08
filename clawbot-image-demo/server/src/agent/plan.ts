@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { savePlan } from "../planStore.js";
 import { textComplete } from "./ollama.js";
+import { jsonrepair } from "jsonrepair";
 
 export type AllowedTool = "llm.text" | "outbox.send";
 
@@ -38,6 +39,27 @@ export type Plan = {
   steps: PlanStep[];
 };
 
+function extractJsonObject(s: string): string {
+  const t = (s ?? "").trim();
+
+  // strip ```json ... ```
+  const fenced = t.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fenced ? fenced[1].trim() : t;
+
+  // grab first {...} block
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start >= 0 && end > start) return candidate.slice(start, end + 1);
+
+  return candidate;
+}
+
+function parsePlanJson(raw: string): any {
+  const candidate = extractJsonObject(raw);
+  return JSON.parse(candidate);
+}
+
+
 /** Very small templating: {{prompt}}, {{vars.foo}} */
 function renderTemplate(tpl: string, ctx: { prompt: string; vars: Record<string, string> }) {
   return tpl
@@ -46,24 +68,23 @@ function renderTemplate(tpl: string, ctx: { prompt: string; vars: Record<string,
 }
 
 function safeJsonParse(s: string): any {
-  // Model may wrap JSON in text/code fences; try to extract first {...} block.
-  const trimmed = s.trim();
+  const trimmed = (s ?? "").trim();
 
-  // If fenced ```json ... ```
+  // Strip ```json fences if model ignores format=json (still happens sometimes)
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fence?.[1]?.trim() ?? trimmed;
+  const candidate = (fence?.[1]?.trim() ?? trimmed);
 
-  // Try direct parse
-  try {
-    return JSON.parse(candidate);
-  } catch {}
+  // Extract first {...} block if extra text leaked
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  const jsonish = (start >= 0 && end > start) ? candidate.slice(start, end + 1) : candidate;
 
-  // Try extracting first JSON object
-  const firstObj = candidate.match(/\{[\s\S]*\}/);
-  if (firstObj) return JSON.parse(firstObj[0]);
+  // 🔥 Repair common errors: missing commas, trailing commas, quotes, etc.
+  const repaired = jsonrepair(jsonish);
 
-  throw new Error("Planner returned non-JSON output");
+  return JSON.parse(repaired);
 }
+
 
 function validatePlanDraft(draft: any): { intent: string; steps: PlanStep[] } {
   if (!draft || typeof draft !== "object") throw new Error("Plan draft must be an object");
@@ -110,6 +131,44 @@ function validatePlanDraft(draft: any): { intent: string; steps: PlanStep[] } {
   return { intent, steps: out };
 }
 
+async function planWithRepair(args: { persona: string; plannerInstruction: string }) {
+  let raw = await textComplete({
+    persona: args.persona,
+    prompt: args.plannerInstruction,
+    forceJson: true
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return safeJsonParse(raw);
+    } catch (e: any) {
+      const err = e?.message || String(e);
+
+      const repairPrompt = `
+Return ONLY valid JSON. No markdown. No extra text.
+
+You must follow this schema exactly:
+{"intent":"string","steps":[{"id":"s1","tool":"llm.text","prompt":"...","saveAs":"x"},{"id":"s2","tool":"outbox.send","teamTarget":"#demo-team","message":"..."}]}
+
+The previous output was invalid JSON. Fix it.
+Error: ${err}
+
+Invalid output:
+${raw}
+`.trim();
+
+      raw = await textComplete({
+        persona: args.persona,
+        prompt: repairPrompt,
+        forceJson: true
+      });
+    }
+  }
+
+  throw new Error("Planner JSON parse failed after retries");
+}
+
+
 export async function createPlan(args: {
   sessionId: string;
   persona: string;
@@ -124,7 +183,7 @@ export async function createPlan(args: {
 
   // Ask the LLM to output a strict JSON plan using only allowlisted tools.
   const plannerInstruction = `
-  Return ONLY JSON. No markdown.
+  Return ONLY valid JSON. No markdown.
 
   Allowed tools:
   - llm.text: { "id": "s1", "tool": "llm.text", "prompt": "...", "saveAs": "name" }
@@ -143,14 +202,9 @@ export async function createPlan(args: {
   console.log("[createPlan] calling ollama...");
 
   // Call the same text model to generate the plan JSON.
-  const raw = await textComplete({
-    persona: args.persona,
-    prompt: plannerInstruction,
-    model: process.env.OLLAMA_PLANNER_MODEL // uses qwen2.5:7b if set
-  });
-
-  const draft = safeJsonParse(raw);
+  const draft = await planWithRepair({ persona: args.persona, plannerInstruction });
   const { intent, steps } = validatePlanDraft(draft);
+
 
   const plan: Plan = {
     planId,

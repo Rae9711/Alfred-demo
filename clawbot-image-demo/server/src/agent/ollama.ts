@@ -16,16 +16,11 @@ const OLLAMA_EXEC_MODEL = process.env.OLLAMA_EXEC_MODEL ?? process.env.OLLAMA_MO
  */
 function personaSystem(persona: string) {
   switch (persona) {
-    case "professional":
-      return "Write clearly, concise, and businesslike. Use structured bullets when helpful.";
-    case "friendly_coach":
-      return "Be friendly and encouraging. Offer concrete next steps. Keep it practical.";
-    case "no_bs":
-      return "Be direct and blunt. No fluff. Call out uncertainties explicitly.";
-    case "playful_nerd":
-      return "Be playful and nerdy, but still accurate. Use crisp explanations.";
-    default:
-      return "Be helpful, accurate, and concise.";
+    case "professional": return "Write clearly, concise, businesslike.";
+    case "friendly_coach": return "Be friendly, encouraging, practical.";
+    case "no_bs": return "Be direct. No fluff.";
+    case "playful_nerd": return "Be playful and nerdy, still accurate.";
+    default: return "Be helpful, accurate, concise.";
   }
 }
 
@@ -99,21 +94,27 @@ export async function visionSummarize(imageUrl: string): Promise<string> {
  * Text-only completion using /api/chat.
  * Use this for your new prompt-only agent.
  */
-export async function textComplete(args: { persona: string; prompt: string; model?: string }): Promise<string> {
+export async function textComplete(args: {
+  persona: string;
+  prompt: string;
+  model?: string;
+  forceJson?: boolean;
+}): Promise<string> {
   const prompt = (args.prompt ?? "").trim();
   if (!prompt) throw new Error("textComplete requires a non-empty prompt");
 
-  const body = {
+  const body: any = {
     model: args.model ?? OLLAMA_PLANNER_MODEL,
     messages: [
       { role: "system", content: personaSystem(args.persona) },
       { role: "user", content: prompt }
     ],
     stream: false,
-    options: { temperature: 0, num_predict: 200 }
+    options: { temperature: 0, num_predict: 256 }
   };
 
-  
+  // ✅ IMPORTANT: make Ollama return strict JSON (no markdown)
+  if (args.forceJson) body.format = "json";
 
   const res = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
@@ -126,9 +127,10 @@ export async function textComplete(args: { persona: string; prompt: string; mode
     throw new Error(`Ollama chat failed: ${res.status} ${t}`);
   }
 
-
   const json: any = await res.json();
   const out = json?.message?.content;
   if (!out) throw new Error("Ollama returned empty content");
   return String(out).trim();
 }
+
+

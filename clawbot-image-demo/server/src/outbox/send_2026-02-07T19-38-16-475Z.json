@@ -1,0 +1,6 @@
+{
+  "teamTarget": "#demo-team",
+  "prompt": "First, write a concise technical explanation of why unrestricted autonomous agents are risky.\nThen, rewrite that explanation for non-technical stakeholders.\nFinally, send the non-technical version to the team.",
+  "summary": "{{non_technical_risk_explanation}}",
+  "createdAt": "2026-02-07T19:38:16.480Z"
+}
