@@ -1,9 +1,96 @@
 /**
- * Plan generation — Call A (Planner).
- *
- * ONE job: produce a strict JSON plan with concrete tool calls + arguments.
- * The plan lists every tool by ID from the registry, with args and dependencies.
- * Execution follows this plan step-by-step.
+ * Plan Generation Module (计划生成模块) — Call A (Planner)
+ * 
+ * 这是系统的 Planner（计划器），负责将用户的自然语言请求转换为可执行的计划。
+ * 
+ * ## 核心职责
+ * 
+ * **单一职责**: 生成严格的 JSON 计划，包含具体的工具调用和参数。
+ * 
+ * Planner 不做的事情：
+ * - 不执行工具（那是 Executor 的工作）
+ * - 不生成最终答案（那是 Reporter 的工作）
+ * - 不进行推理（只生成计划结构）
+ * 
+ * ## 计划结构
+ * 
+ * 计划是一个 JSON 对象，包含：
+ * - `intent`: 用户意图的简短描述
+ * - `steps`: 执行步骤数组
+ *   - `id`: 步骤 ID（如 "s1", "s2"）
+ *   - `tool`: 工具 ID（必须来自注册表）
+ *   - `description`: 步骤描述（中文）
+ *   - `args`: 工具参数（可以包含变量引用）
+ *   - `saveAs`: 结果保存的变量名（可选）
+ *   - `dependsOn`: 依赖的步骤 ID（可选）
+ * - `requiredPermissions`: 所需权限列表
+ * 
+ * ## 处理流程
+ * 
+ * 1. **构建提示词**:
+ *    - 角色定义（中文 Planner）
+ *    - 工具目录（动态生成，根据平台过滤）
+ *    - 重要规则（CRITICAL RULES）
+ *    - Few-shot 示例
+ *    - 用户请求
+ * 
+ * 2. **调用 LLM**: 使用 `textComplete()` 调用 Planner 模型
+ * 
+ * 3. **提取 JSON**: 从 LLM 输出中提取 JSON（可能包含 markdown 代码块）
+ * 
+ * 4. **修复 JSON**: 使用 `jsonrepair` 修复常见的 JSON 错误
+ * 
+ * 5. **规范化**: `normalizePlanDraft()` 处理各种 JSON 格式：
+ *    - 单步骤对象 → 包装成数组
+ *    - 不同键名（plan/steps, actions, tasks） → 统一为 steps
+ *    - 缺失字段 → 自动推断
+ * 
+ * 6. **后处理**:
+ *    - 清理 saveAs（移除 {{vars.}} 包装）
+ *    - 自动推断 saveAs（如果模型忘记）
+ *    - 过滤不需要的 file.save 步骤
+ * 
+ * 7. **验证**: 确保计划包含非空的 steps 数组
+ * 
+ * ## 模型选择
+ * 
+ * - 默认使用 `qwen2.5:1.5b`（快速、成本低）
+ * - 可以通过 `OLLAMA_PLANNER_MODEL` 环境变量覆盖
+ * - 温度设置为 0（确定性输出）
+ * 
+ * ## 错误处理
+ * 
+ * - JSON 解析失败：尝试修复，如果仍失败则抛出错误
+ * - 计划格式错误：规范化处理，如果仍无效则抛出错误
+ * - LLM 超时：10 分钟超时（可配置）
+ * 
+ * ## 示例输出
+ * 
+ * ```json
+ * {
+ *   "intent": "给查理发消息",
+ *   "steps": [
+ *     {
+ *       "id": "s1",
+ *       "tool": "contacts.apple",
+ *       "description": "查找查理",
+ *       "args": { "query": "查理" },
+ *       "saveAs": "contact"
+ *     },
+ *     {
+ *       "id": "s2",
+ *       "tool": "imessage.send",
+ *       "description": "发送消息",
+ *       "args": {
+ *         "handle": "{{vars.contact.handle}}",
+ *         "message": "你好"
+ *       },
+ *       "dependsOn": ["s1"]
+ *     }
+ *   ],
+ *   "requiredPermissions": ["contacts.read", "platform.send"]
+ * }
+ * ```
  */
 
 import { nanoid } from "nanoid";

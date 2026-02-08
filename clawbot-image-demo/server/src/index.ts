@@ -1,3 +1,81 @@
+/**
+ * Main Server Entry Point (服务器主入口)
+ * 
+ * 这是整个后端服务的入口文件，负责：
+ * 1. Express HTTP 服务器设置
+ * 2. WebSocket 服务器设置
+ * 3. 消息路由和处理
+ * 4. 静态文件服务（生产环境）
+ * 
+ * ## 服务器架构
+ * 
+ * - **HTTP**: Express 服务器，提供 REST API
+ * - **WebSocket**: 实时双向通信，用于 Agent 操作
+ * - **静态文件**: 生产环境 serve 前端文件
+ * 
+ * ## 启动流程
+ * 
+ * 1. 导入工具注册模块（自动注册所有工具）
+ * 2. 创建 Express 应用
+ * 3. 设置中间件（CORS, JSON）
+ * 4. 设置路由（/health）
+ * 5. 设置静态文件服务（生产环境）
+ * 6. 创建 WebSocket 服务器
+ * 7. 监听端口（默认 8080）
+ * 
+ * ## WebSocket 消息类型
+ * 
+ * ### 客户端 → 服务器
+ * 
+ * - `session.setPersona`: 设置 AI 人格
+ * - `session.setPrompt`: 设置提示词
+ * - `agent.plan`: 生成计划
+ * - `agent.execute`: 执行计划
+ * - `agent.render`: 重新渲染结果（不同风格）
+ * 
+ * ### 服务器 → 客户端
+ * 
+ * - `gateway.ready`: 连接就绪
+ * - `agent.plan.proposed`: 计划生成完成
+ * - `agent.plan.error`: 计划生成失败
+ * - `agent.exec.started`: 执行开始
+ * - `agent.exec.step`: 步骤状态更新
+ * - `agent.exec.finished`: 执行完成
+ * - `tool.start`: 工具开始执行
+ * - `tool.success`: 工具执行成功
+ * - `tool.error`: 工具执行失败
+ * - `agent.rendered`: 结果渲染完成
+ * 
+ * ## 执行流程
+ * 
+ * 1. **Plan Generation** (agent.plan):
+ *    - 调用 `createPlan()` 生成计划
+ *    - 发送 `agent.plan.proposed` 事件
+ * 
+ * 2. **Execution** (agent.execute):
+ *    - 调用 `executePlan()` 执行计划
+ *    - 发送执行事件（tool.start, tool.success, etc.）
+ *    - 调用 `renderFinal()` 生成最终答案
+ *    - 发送 `agent.rendered` 事件
+ * 
+ * 3. **Re-render** (agent.render):
+ *    - 使用不同的 persona 重新渲染结果
+ *    - 发送 `agent.rendered` 事件
+ * 
+ * ## 错误处理
+ * 
+ * - WebSocket 消息解析失败：返回 "Bad JSON" 错误
+ * - 未知方法：返回 "Unknown method" 错误
+ * - 执行错误：发送 `agent.plan.error` 事件
+ * - 渲染失败：发送降级消息（包含执行摘要）
+ * 
+ * ## 环境变量
+ * 
+ * - `PORT`: 服务器端口（默认 8080）
+ * - `NODE_ENV`: 环境模式（development/production）
+ * - `OLLAMA_URL`: Ollama API 地址
+ * - `OLLAMA_MODEL`: 默认模型
+ */
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -9,7 +87,22 @@ import { createPlan } from "./agent/plan.js";
 import { executePlan } from "./agent/execute.js";
 import { renderFinal } from "./agent/render.js";
 
-// Register all tools at startup
+/**
+ * 导入工具注册模块
+ * 
+ * 这个导入会执行所有工具的 registerTool() 调用，
+ * 将所有工具注册到全局工具注册表中。
+ * 
+ * 工具注册顺序：
+ * 1. text.generate
+ * 2. image.generate
+ * 3. contacts.lookup
+ * 4. contacts.apple
+ * 5. platform.send
+ * 6. sms.send
+ * 7. imessage.send
+ * 8. file.save
+ */
 import "./agent/tools/index.js";
 
 const app = express();
