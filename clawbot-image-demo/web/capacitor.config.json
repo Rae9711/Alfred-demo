@@ -1,0 +1,6 @@
+{
+  "appId": "Alfred.app",
+  "appName": "Alfred",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}

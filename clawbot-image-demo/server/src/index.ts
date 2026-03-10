@@ -164,7 +164,7 @@ app.post("/upload", upload.single("file"), (req, res) => {
   res.json({ ok: true, fileId });
 });
 
-// ── WeCom Kefu webhook (微信客服回调) ──
+// WeCom Kefu webhook (微信客服回调) ──
 
 import { getTool } from "./agent/tools/registry.js";
 import {
@@ -183,48 +183,92 @@ const WECOM_CALLBACK_AES_KEY = (process.env.WECOM_CALLBACK_AES_KEY ?? "").trim()
 app.get("/webhook/wechat", (req, res) => {
   const { msg_signature, timestamp, nonce, echostr } = req.query as Record<string, string>;
 
+  console.log("[webhook/wechat] Starting validation for WeCom webhook callback");
+  console.log("[webhook/wechat] Received parameters:", {
+    msg_signature,
+    timestamp,
+    nonce,
+    echostr,
+  });
+
   if (!WECOM_CALLBACK_TOKEN || !WECOM_CALLBACK_AES_KEY || !echostr) {
+    console.error("[webhook/wechat] Missing configuration or parameters", {
+      WECOM_CALLBACK_TOKEN: !!WECOM_CALLBACK_TOKEN,
+      WECOM_CALLBACK_AES_KEY: !!WECOM_CALLBACK_AES_KEY,
+      echostr: !!echostr,
+    });
     res.status(400).send("WeCom callback not configured");
     return;
   }
 
-  // Verify signature
-  const sorted = [WECOM_CALLBACK_TOKEN, timestamp, nonce, echostr].sort().join("");
-  const signature = crypto.createHash("sha1").update(sorted).digest("hex");
-
-  if (signature !== msg_signature) {
-    res.status(403).send("Invalid signature");
-    return;
-  }
-
-  // Decrypt echostr
   try {
-    const decrypted = decryptWeComMsg(echostr);
-    res.send(decrypted);
-  } catch (e: any) {
-    console.error("[webhook/wechat] decrypt echostr failed:", e?.message);
-    res.status(500).send("Decrypt failed");
+    console.log("[webhook/wechat] Validating signature...");
+    console.log("[webhook/wechat] Values used for hash computation:", {
+      token: WECOM_CALLBACK_TOKEN,
+      timestamp,
+      nonce,
+      echostr,
+    });
+
+    // Concatenate values in the correct order (no sorting)
+    const concatenated = `${WECOM_CALLBACK_TOKEN}${timestamp}${nonce}${echostr}`;
+    console.log("[webhook/wechat] Concatenated string for hash computation:", concatenated);
+
+    const hash = crypto.createHash("sha1").update(concatenated).digest("hex");
+
+    console.log("[webhook/wechat] Computed hash:", hash);
+    if (hash !== msg_signature) {
+      console.error("[webhook/wechat] Signature mismatch", {
+        computed: hash,
+        received: msg_signature,
+      });
+      res.status(403).send("Invalid signature");
+      return;
+    }
+
+    console.log("[webhook/wechat] Signature validated. Decrypting echostr...");
+
+    try {
+      const aesKey = Buffer.from(WECOM_CALLBACK_AES_KEY + "=", "base64");
+      const decipher = crypto.createDecipheriv("aes-256-cbc", aesKey, aesKey.slice(0, 16));
+      decipher.setAutoPadding(false);
+
+      const decoded = Buffer.from(echostr, "base64");
+      let decrypted = Buffer.concat([decipher.update(decoded), decipher.final()]);
+
+      // Remove padding
+      const pad = decrypted[decrypted.length - 1];
+      decrypted = decrypted.slice(0, decrypted.length - pad);
+
+      // Extract plaintext message
+      const msgLen = decrypted.readUInt32BE(16);
+      const msg = decrypted.slice(20, 20 + msgLen).toString();
+
+      console.log("[webhook/wechat] Decrypted echostr:", msg);
+      res.status(200).send(msg);
+    } catch (decryptionError) {
+      console.error("[webhook/wechat] Error during echostr decryption", decryptionError);
+      res.status(500).send("Decryption failed");
+    }
+  } catch (error) {
+    console.error("[webhook/wechat] Error during validation", error);
+    res.status(500).send("Internal Server Error");
   }
 });
 
 // WeCom callback event notification (POST)
 // This is a lightweight notification — we then call sync_msg to get actual messages
 app.post("/webhook/wechat", express.text({ type: "*/*" }), async (req, res) => {
-  // Respond immediately (WeCom requires response within 5 seconds)
   res.send("success");
 
   if (!isWeComConfigured) return;
 
   try {
     const { msg_signature, timestamp, nonce } = req.query as Record<string, string>;
-
-    // Parse the XML body to extract Token and OpenKfId
     const body = typeof req.body === "string" ? req.body : "";
     const tokenMatch = body.match(/<Token><!\[CDATA\[(.*?)\]\]><\/Token>/);
     const kfIdMatch = body.match(/<OpenKfId><!\[CDATA\[(.*?)\]\]><\/OpenKfId>/);
     const callbackToken = tokenMatch?.[1] ?? "";
-
-    // Pull messages using sync_msg
     await syncAndReplyMessages(callbackToken);
   } catch (e: any) {
     console.error("[webhook/wechat] callback error:", e?.message ?? e);
@@ -380,46 +424,46 @@ async function fetchAndRegisterUser(externalUserId: string) {
 }
 
 // WeCom AES decryption helper
-function decryptWeComMsg(encrypted: string): string {
-  const aesKey = Buffer.from(WECOM_CALLBACK_AES_KEY + "=", "base64");
-  const iv = aesKey.subarray(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", aesKey, iv);
-  decipher.setAutoPadding(false);
-  let decrypted = Buffer.concat([decipher.update(encrypted, "base64"), decipher.final()]);
+function decryptWeComMsg(encrypted: string, key: string): string {
+  try {
+    console.log("[decryptWeComMsg] Starting decryption with encrypted:", encrypted);
+    const aesKey = Buffer.from(key + "=", "base64");
+    const iv = aesKey.subarray(0, 16);
+    console.log("[decryptWeComMsg] AES Key:", aesKey.toString("hex"), "IV:", iv.toString("hex"));
 
-  // Remove PKCS#7 padding
-  const pad = decrypted[decrypted.length - 1];
-  decrypted = decrypted.subarray(0, decrypted.length - pad);
+    const decipher = crypto.createDecipheriv("aes-256-cbc", aesKey, iv);
+    decipher.setAutoPadding(false);
+    let decrypted = Buffer.concat([decipher.update(encrypted, "base64"), decipher.final()]);
+    console.log("[decryptWeComMsg] Decrypted buffer:", decrypted.toString("hex"));
 
-  // Format: random(16) + msg_len(4, big-endian) + msg + corpid
-  const msgLen = decrypted.readUInt32BE(16);
-  const msg = decrypted.subarray(20, 20 + msgLen).toString("utf-8");
-  return msg;
+    // Remove PKCS#7 padding
+    const pad = decrypted[decrypted.length - 1];
+    decrypted = decrypted.subarray(0, decrypted.length - pad);
+    console.log("[decryptWeComMsg] Buffer after padding removal:", decrypted.toString("hex"));
+
+    // Format: random(16) + msg_len(4, big-endian) + msg + corpid
+    const msgLen = decrypted.readUInt32BE(16);
+    const msg = decrypted.subarray(20, 20 + msgLen).toString("utf-8");
+    console.log("[decryptWeComMsg] Extracted message:", msg);
+
+    return msg;
+  } catch (error) {
+    console.error("[decryptWeComMsg] Decryption failed:", error);
+    throw new Error("Decryption failed");
+  }
 }
 
 // Keep outbox (still useful even for text-only "send to team" sandbox artifacts)
 const outboxDir = path.resolve("src/outbox");
 fs.mkdirSync(outboxDir, { recursive: true });
 
-// Serve frontend static files in production
-const isProduction = process.env.NODE_ENV === "production";
-if (isProduction) {
-  // Try multiple paths: Docker build path, then local dev path
-  const webDistPaths = [
-    path.resolve("./web-dist"),  // Docker build (copied from frontend-builder)
-    path.resolve("../web/dist"), // Local development
-  ];
-  
-  for (const webDist of webDistPaths) {
-    if (fs.existsSync(webDist)) {
-      app.use(express.static(webDist));
-      app.get("*", (_req, res) => {
-        res.sendFile(path.join(webDist, "index.html"));
-      });
-      console.log(`Serving frontend from: ${webDist}`);
-      break;
-    }
-  }
+// Serve frontend files (production only)
+if (process.env.NODE_ENV === "production") {
+  const frontendDir = path.resolve("../web/dist");
+  app.use(express.static(frontendDir));
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(frontendDir, "index.html"));
+  });
 }
 
 const PORT = process.env.PORT ?? 8080;
