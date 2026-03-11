@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { createWS, type EventMsg } from "./api/ws";
 import ProposedPlan from "./components/ProposedPlan";
 import ExecutionLog from "./components/ExecutionLog";
@@ -6,6 +7,7 @@ import FinalAnswer from "./components/FinalAnswer";
 import AgentAvatarCard from "./components/AgentAvatarCard";
 import AuthScreen from "./components/AuthScreen";
 import { isAuthEnabled } from "./api/supabase";
+import { MobileSetupScreen, MobileMainScreen } from "./MobileUI";
 import {
   applyEvent,
   equipCosmetic,
@@ -17,6 +19,9 @@ import {
   type AvatarState,
   type CosmeticSlot,
 } from "./agentMeta";
+
+// Detect if running on mobile (Capacitor native platform)
+const isMobile = Capacitor.isNativePlatform();
 
 // Auto-detect WebSocket URL from current hostname if accessed via ngrok
 function getWebSocketURL(token?: string): string {
@@ -383,6 +388,19 @@ export default function App() {
     } catch { return null; }
   });
 
+  const handleReset = () => {
+    localStorage.removeItem("ai_identity");
+    localStorage.removeItem("demo_session");
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith("agent_meta_"));
+    keys.forEach((k) => localStorage.removeItem(k));
+    setIdentity(null);
+  };
+
+  const handleLogout = isAuthEnabled() ? () => {
+    localStorage.removeItem("auth_session");
+    setAuthSession(null);
+  } : undefined;
+
   // If Supabase auth is enabled but user isn't logged in, show auth screen
   if (isAuthEnabled() && !authSession) {
     return (
@@ -395,6 +413,22 @@ export default function App() {
     );
   }
 
+  // Mobile UI - native app
+  if (isMobile) {
+    if (!identity) {
+      return <MobileSetupScreen onComplete={setIdentity} />;
+    }
+    return (
+      <MobileMainScreen
+        identity={identity}
+        accessToken={authSession?.accessToken}
+        onReset={handleReset}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  // Web UI - desktop browser
   if (!identity) {
     return <SetupScreen onComplete={setIdentity} />;
   }
@@ -403,17 +437,8 @@ export default function App() {
     <MainScreen
       identity={identity}
       accessToken={authSession?.accessToken}
-      onReset={() => {
-        localStorage.removeItem("ai_identity");
-        localStorage.removeItem("demo_session");
-        const keys = Object.keys(localStorage).filter((k) => k.startsWith("agent_meta_"));
-        keys.forEach((k) => localStorage.removeItem(k));
-        setIdentity(null);
-      }}
-      onLogout={isAuthEnabled() ? () => {
-        localStorage.removeItem("auth_session");
-        setAuthSession(null);
-      } : undefined}
+      onReset={handleReset}
+      onLogout={handleLogout}
     />
   );
 }
