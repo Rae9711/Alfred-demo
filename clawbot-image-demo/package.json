@@ -1,5 +1,9 @@
 {
   "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.2.0"
   }
 }
