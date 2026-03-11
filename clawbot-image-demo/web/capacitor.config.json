@@ -1,6 +1,6 @@
 {
   "appId": "Alfred.app",
   "appName": "Alfred",
-  "webDir": "dist",
+  "webDir": "www",
   "bundledWebRuntime": false
 }

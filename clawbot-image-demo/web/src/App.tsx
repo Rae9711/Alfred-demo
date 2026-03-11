@@ -177,14 +177,16 @@ function SetupScreen({ onComplete }: { onComplete: (id: AIIdentity) => void }) {
         justifyContent: "center",
         background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
         fontFamily: "'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif",
+        padding: "20px 16px",
       }}
     >
       <div
         style={{
           background: "white",
           borderRadius: 16,
-          padding: "40px 36px",
-          width: 440,
+          padding: "clamp(24px, 5vw, 40px) clamp(20px, 4vw, 36px)",
+          width: "100%",
+          maxWidth: 440,
           boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
         }}
       >
@@ -340,16 +342,17 @@ function PhaseBar({ phase }: { phase: Phase }) {
   const currentIdx = PHASE_STEPS.findIndex((s) => s.key === displayPhase);
 
   return (
-    <div style={{ display: "flex", gap: 4, marginBottom: 20 }}>
+    <div className="scroll-x" style={{ display: "flex", gap: 4, marginBottom: 16, paddingBottom: 4 }}>
       {PHASE_STEPS.map((s, i) => (
         <div
           key={s.key}
           style={{
-            flex: 1,
+            flex: "1 0 auto",
+            minWidth: 60,
             textAlign: "center",
-            padding: "8px 0",
+            padding: "8px 10px",
             borderRadius: 8,
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: i === currentIdx ? 700 : 400,
             color: i <= currentIdx ? "white" : "#9CA3AF",
             background:
@@ -359,6 +362,7 @@ function PhaseBar({ phase }: { phase: Phase }) {
                   ? "#4F46E5"
                   : "#F3F4F6",
             transition: "all 0.3s",
+            whiteSpace: "nowrap",
           }}
         >
           {s.label}
@@ -798,40 +802,42 @@ function MainScreen({
         style={{
           background: "white",
           borderBottom: "1px solid #E5E7EB",
-          padding: "10px 24px",
+          padding: "10px 12px",
           display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
+          flexDirection: "column",
+          gap: 8,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {/* Avatar */}
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
-              background: "linear-gradient(135deg, #4F46E5, #7C3AED)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "white",
-              fontWeight: 700,
-              fontSize: 16,
-              flexShrink: 0,
-            }}
-          >
-            {identity.name[0]}
-          </div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>{identity.name}</div>
-            <div style={{ fontSize: 12, color: "#6B7280" }}>
-              {personaInfo?.label ?? identity.persona} · {platLabel}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            {/* Avatar */}
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: "linear-gradient(135deg, #4F46E5, #7C3AED)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "white",
+                fontWeight: 700,
+                fontSize: 16,
+                flexShrink: 0,
+              }}
+            >
+              {identity.name[0]}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{identity.name}</div>
+              <div style={{ fontSize: 11, color: "#6B7280", whiteSpace: "nowrap" }}>
+                {personaInfo?.label ?? identity.persona} · {platLabel}
+              </div>
             </div>
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="header-badges scroll-x" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {/* Locality badge */}
           <div
             style={{
@@ -942,14 +948,15 @@ function MainScreen({
       </header>
 
       {/* ── Main content ────────────────────────────────── */}
-      <div style={{ maxWidth: 1020, margin: "0 auto", padding: "20px 24px" }}>
+      <div style={{ maxWidth: 1020, margin: "0 auto", padding: "12px 12px 80px" }}>
         <PhaseBar phase={phase} />
 
         <div
+          className="main-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
-            gap: 20,
+            gap: 16,
             alignItems: "start",
           }}
         >
