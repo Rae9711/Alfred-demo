@@ -1,13 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Capacitor } from "@capacitor/core";
 import { createWS, type EventMsg } from "./api/ws";
 import ProposedPlan from "./components/ProposedPlan";
 import ExecutionLog from "./components/ExecutionLog";
 import FinalAnswer from "./components/FinalAnswer";
 import AgentAvatarCard from "./components/AgentAvatarCard";
 import AuthScreen from "./components/AuthScreen";
+import APISettings, { loadAPIConfig, saveAPIConfig, type APIConfig } from "./components/APISettings";
 import { isAuthEnabled } from "./api/supabase";
-import { MobileSetupScreen, MobileMainScreen } from "./MobileUI";
 import {
   applyEvent,
   equipCosmetic,
@@ -19,9 +18,6 @@ import {
   type AvatarState,
   type CosmeticSlot,
 } from "./agentMeta";
-
-// Detect if running on mobile (Capacitor native platform)
-const isMobile = Capacitor.isNativePlatform();
 
 // Auto-detect WebSocket URL from current hostname if accessed via ngrok
 function getWebSocketURL(token?: string): string {
@@ -182,16 +178,14 @@ function SetupScreen({ onComplete }: { onComplete: (id: AIIdentity) => void }) {
         justifyContent: "center",
         background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
         fontFamily: "'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif",
-        padding: "20px 16px",
       }}
     >
       <div
         style={{
           background: "white",
           borderRadius: 16,
-          padding: "clamp(24px, 5vw, 40px) clamp(20px, 4vw, 36px)",
-          width: "100%",
-          maxWidth: 440,
+          padding: "40px 36px",
+          width: 440,
           boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
         }}
       >
@@ -347,17 +341,16 @@ function PhaseBar({ phase }: { phase: Phase }) {
   const currentIdx = PHASE_STEPS.findIndex((s) => s.key === displayPhase);
 
   return (
-    <div className="scroll-x" style={{ display: "flex", gap: 4, marginBottom: 16, paddingBottom: 4 }}>
+    <div style={{ display: "flex", gap: 4, marginBottom: 20 }}>
       {PHASE_STEPS.map((s, i) => (
         <div
           key={s.key}
           style={{
-            flex: "1 0 auto",
-            minWidth: 60,
+            flex: 1,
             textAlign: "center",
-            padding: "8px 10px",
+            padding: "8px 0",
             borderRadius: 8,
-            fontSize: 11,
+            fontSize: 12,
             fontWeight: i === currentIdx ? 700 : 400,
             color: i <= currentIdx ? "white" : "#9CA3AF",
             background:
@@ -367,7 +360,6 @@ function PhaseBar({ phase }: { phase: Phase }) {
                   ? "#4F46E5"
                   : "#F3F4F6",
             transition: "all 0.3s",
-            whiteSpace: "nowrap",
           }}
         >
           {s.label}
@@ -388,19 +380,6 @@ export default function App() {
     } catch { return null; }
   });
 
-  const handleReset = () => {
-    localStorage.removeItem("ai_identity");
-    localStorage.removeItem("demo_session");
-    const keys = Object.keys(localStorage).filter((k) => k.startsWith("agent_meta_"));
-    keys.forEach((k) => localStorage.removeItem(k));
-    setIdentity(null);
-  };
-
-  const handleLogout = isAuthEnabled() ? () => {
-    localStorage.removeItem("auth_session");
-    setAuthSession(null);
-  } : undefined;
-
   // If Supabase auth is enabled but user isn't logged in, show auth screen
   if (isAuthEnabled() && !authSession) {
     return (
@@ -413,22 +392,6 @@ export default function App() {
     );
   }
 
-  // Mobile UI - native app
-  if (isMobile) {
-    if (!identity) {
-      return <MobileSetupScreen onComplete={setIdentity} />;
-    }
-    return (
-      <MobileMainScreen
-        identity={identity}
-        accessToken={authSession?.accessToken}
-        onReset={handleReset}
-        onLogout={handleLogout}
-      />
-    );
-  }
-
-  // Web UI - desktop browser
   if (!identity) {
     return <SetupScreen onComplete={setIdentity} />;
   }
@@ -437,8 +400,17 @@ export default function App() {
     <MainScreen
       identity={identity}
       accessToken={authSession?.accessToken}
-      onReset={handleReset}
-      onLogout={handleLogout}
+      onReset={() => {
+        localStorage.removeItem("ai_identity");
+        localStorage.removeItem("demo_session");
+        const keys = Object.keys(localStorage).filter((k) => k.startsWith("agent_meta_"));
+        keys.forEach((k) => localStorage.removeItem(k));
+        setIdentity(null);
+      }}
+      onLogout={isAuthEnabled() ? () => {
+        localStorage.removeItem("auth_session");
+        setAuthSession(null);
+      } : undefined}
     />
   );
 }
@@ -497,6 +469,7 @@ function MainScreen({
   const [avatarState, setAvatarState] = useState<AvatarState>("idle");
   const [lastGainXp, setLastGainXp] = useState(0);
   const [rewardedRunIds, setRewardedRunIds] = useState<Set<string>>(new Set());
+  const [showAPISettings, setShowAPISettings] = useState(false);
 
   useEffect(() => {
     setAgentMeta(loadMeta(metaStorageKey));
@@ -827,42 +800,40 @@ function MainScreen({
         style={{
           background: "white",
           borderBottom: "1px solid #E5E7EB",
-          padding: "10px 12px",
+          padding: "10px 24px",
           display: "flex",
-          flexDirection: "column",
-          gap: 8,
+          alignItems: "center",
+          justifyContent: "space-between",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            {/* Avatar */}
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: "linear-gradient(135deg, #4F46E5, #7C3AED)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "white",
-                fontWeight: 700,
-                fontSize: 16,
-                flexShrink: 0,
-              }}
-            >
-              {identity.name[0]}
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{identity.name}</div>
-              <div style={{ fontSize: 11, color: "#6B7280", whiteSpace: "nowrap" }}>
-                {personaInfo?.label ?? identity.persona} · {platLabel}
-              </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {/* Avatar */}
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: "linear-gradient(135deg, #4F46E5, #7C3AED)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "white",
+              fontWeight: 700,
+              fontSize: 16,
+              flexShrink: 0,
+            }}
+          >
+            {identity.name[0]}
+          </div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{identity.name}</div>
+            <div style={{ fontSize: 12, color: "#6B7280" }}>
+              {personaInfo?.label ?? identity.persona} · {platLabel}
             </div>
           </div>
         </div>
 
-        <div className="header-badges scroll-x" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {/* Locality badge */}
           <div
             style={{
@@ -953,6 +924,21 @@ function MainScreen({
             重新设置
           </button>
 
+          <button
+            onClick={() => setShowAPISettings(true)}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid #3B82F6",
+              background: "#EFF6FF",
+              fontSize: 12,
+              color: "#3B82F6",
+              cursor: "pointer",
+            }}
+          >
+            API 配置
+          </button>
+
           {onLogout && (
             <button
               onClick={onLogout}
@@ -972,16 +958,24 @@ function MainScreen({
         </div>
       </header>
 
+      {/* API Settings Modal */}
+      <APISettings
+        isOpen={showAPISettings}
+        onClose={() => setShowAPISettings(false)}
+        onSave={(config) => {
+          console.log("[app] API settings saved:", config.llmProvider);
+        }}
+      />
+
       {/* ── Main content ────────────────────────────────── */}
-      <div style={{ maxWidth: 1020, margin: "0 auto", padding: "12px 12px 80px" }}>
+      <div style={{ maxWidth: 1020, margin: "0 auto", padding: "20px 24px" }}>
         <PhaseBar phase={phase} />
 
         <div
-          className="main-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
-            gap: 16,
+            gap: 20,
             alignItems: "start",
           }}
         >

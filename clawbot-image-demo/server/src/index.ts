@@ -100,6 +100,7 @@ import { getSupabase } from "./db/supabase.js";
 import { createPlan } from "./agent/plan.js";
 import { executePlan } from "./agent/execute.js";
 import { renderFinal } from "./agent/render.js";
+import { updateSettings, getSettings, chatCompletion } from "./agent/llm.js";
 import {
   getConnectedConnectorIds,
   hasConnector,
@@ -135,6 +136,75 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// ── Settings API endpoints ──────────────────────────────
+
+// Get current settings (masks sensitive keys)
+app.get("/api/settings", (_req, res) => {
+  const settings = getSettings();
+  res.json({
+    llmProvider: settings.provider || "auto",
+    hasAnthropicKey: !!settings.anthropicKey,
+    hasQwenKey: !!settings.qwenKey,
+    hasGeminiKey: !!settings.geminiKey,
+    hasBraveSearchKey: !!settings.braveSearchKey,
+    hasKiwiKey: !!settings.kiwiKey,
+    ollamaUrl: settings.ollamaUrl,
+  });
+});
+
+// Update settings
+app.post("/api/settings", (req, res) => {
+  try {
+    const body = req.body;
+    updateSettings({
+      llmProvider: body.llmProvider,
+      anthropicKey: body.anthropicKey,
+      qwenKey: body.qwenKey,
+      geminiKey: body.geminiKey,
+      ollamaUrl: body.ollamaUrl,
+      braveSearchKey: body.braveSearchKey,
+      kiwiKey: body.kiwiKey,
+    });
+    console.log("[settings] updated via API");
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Test LLM connection
+app.post("/api/settings/test", async (req, res) => {
+  try {
+    const body = req.body;
+    // Temporarily update settings for testing
+    updateSettings({
+      llmProvider: body.llmProvider,
+      anthropicKey: body.anthropicKey,
+      qwenKey: body.qwenKey,
+      geminiKey: body.geminiKey,
+      ollamaUrl: body.ollamaUrl,
+    });
+
+    // Try a simple completion
+    const result = await chatCompletion({
+      messages: [{ role: "user", content: "Say 'OK' in Chinese." }],
+      role: "reporter",
+      maxTokens: 10,
+    });
+
+    res.json({ 
+      ok: true, 
+      provider: body.llmProvider || "auto",
+      response: result.content.slice(0, 50),
+    });
+  } catch (e: any) {
+    res.json({ 
+      ok: false, 
+      error: e.message || "Connection failed",
+    });
+  }
+});
+
 // File upload endpoint (for PDF processing)
 const uploadsDir = path.resolve("src/uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
@@ -164,7 +234,7 @@ app.post("/upload", upload.single("file"), (req, res) => {
   res.json({ ok: true, fileId });
 });
 
-// WeCom Kefu webhook (微信客服回调) ──
+// ── WeCom Kefu webhook (微信客服回调) ──
 
 import { getTool } from "./agent/tools/registry.js";
 import {
@@ -183,92 +253,48 @@ const WECOM_CALLBACK_AES_KEY = (process.env.WECOM_CALLBACK_AES_KEY ?? "").trim()
 app.get("/webhook/wechat", (req, res) => {
   const { msg_signature, timestamp, nonce, echostr } = req.query as Record<string, string>;
 
-  console.log("[webhook/wechat] Starting validation for WeCom webhook callback");
-  console.log("[webhook/wechat] Received parameters:", {
-    msg_signature,
-    timestamp,
-    nonce,
-    echostr,
-  });
-
   if (!WECOM_CALLBACK_TOKEN || !WECOM_CALLBACK_AES_KEY || !echostr) {
-    console.error("[webhook/wechat] Missing configuration or parameters", {
-      WECOM_CALLBACK_TOKEN: !!WECOM_CALLBACK_TOKEN,
-      WECOM_CALLBACK_AES_KEY: !!WECOM_CALLBACK_AES_KEY,
-      echostr: !!echostr,
-    });
     res.status(400).send("WeCom callback not configured");
     return;
   }
 
+  // Verify signature
+  const sorted = [WECOM_CALLBACK_TOKEN, timestamp, nonce, echostr].sort().join("");
+  const signature = crypto.createHash("sha1").update(sorted).digest("hex");
+
+  if (signature !== msg_signature) {
+    res.status(403).send("Invalid signature");
+    return;
+  }
+
+  // Decrypt echostr
   try {
-    console.log("[webhook/wechat] Validating signature...");
-    console.log("[webhook/wechat] Values used for hash computation:", {
-      token: WECOM_CALLBACK_TOKEN,
-      timestamp,
-      nonce,
-      echostr,
-    });
-
-    // Concatenate values in the correct order (no sorting)
-    const concatenated = `${WECOM_CALLBACK_TOKEN}${timestamp}${nonce}${echostr}`;
-    console.log("[webhook/wechat] Concatenated string for hash computation:", concatenated);
-
-    const hash = crypto.createHash("sha1").update(concatenated).digest("hex");
-
-    console.log("[webhook/wechat] Computed hash:", hash);
-    if (hash !== msg_signature) {
-      console.error("[webhook/wechat] Signature mismatch", {
-        computed: hash,
-        received: msg_signature,
-      });
-      res.status(403).send("Invalid signature");
-      return;
-    }
-
-    console.log("[webhook/wechat] Signature validated. Decrypting echostr...");
-
-    try {
-      const aesKey = Buffer.from(WECOM_CALLBACK_AES_KEY + "=", "base64");
-      const decipher = crypto.createDecipheriv("aes-256-cbc", aesKey, aesKey.slice(0, 16));
-      decipher.setAutoPadding(false);
-
-      const decoded = Buffer.from(echostr, "base64");
-      let decrypted = Buffer.concat([decipher.update(decoded), decipher.final()]);
-
-      // Remove padding
-      const pad = decrypted[decrypted.length - 1];
-      decrypted = decrypted.slice(0, decrypted.length - pad);
-
-      // Extract plaintext message
-      const msgLen = decrypted.readUInt32BE(16);
-      const msg = decrypted.slice(20, 20 + msgLen).toString();
-
-      console.log("[webhook/wechat] Decrypted echostr:", msg);
-      res.status(200).send(msg);
-    } catch (decryptionError) {
-      console.error("[webhook/wechat] Error during echostr decryption", decryptionError);
-      res.status(500).send("Decryption failed");
-    }
-  } catch (error) {
-    console.error("[webhook/wechat] Error during validation", error);
-    res.status(500).send("Internal Server Error");
+    const decrypted = decryptWeComMsg(echostr);
+    res.send(decrypted);
+  } catch (e: any) {
+    console.error("[webhook/wechat] decrypt echostr failed:", e?.message);
+    res.status(500).send("Decrypt failed");
   }
 });
 
 // WeCom callback event notification (POST)
 // This is a lightweight notification — we then call sync_msg to get actual messages
 app.post("/webhook/wechat", express.text({ type: "*/*" }), async (req, res) => {
+  // Respond immediately (WeCom requires response within 5 seconds)
   res.send("success");
 
   if (!isWeComConfigured) return;
 
   try {
     const { msg_signature, timestamp, nonce } = req.query as Record<string, string>;
+
+    // Parse the XML body to extract Token and OpenKfId
     const body = typeof req.body === "string" ? req.body : "";
     const tokenMatch = body.match(/<Token><!\[CDATA\[(.*?)\]\]><\/Token>/);
     const kfIdMatch = body.match(/<OpenKfId><!\[CDATA\[(.*?)\]\]><\/OpenKfId>/);
     const callbackToken = tokenMatch?.[1] ?? "";
+
+    // Pull messages using sync_msg
     await syncAndReplyMessages(callbackToken);
   } catch (e: any) {
     console.error("[webhook/wechat] callback error:", e?.message ?? e);
@@ -424,27 +450,21 @@ async function fetchAndRegisterUser(externalUserId: string) {
 }
 
 // WeCom AES decryption helper
-function decryptWeComMsg(encrypted: string, key: string): string {
+function decryptWeComMsg(encrypted: string): string {
   try {
-    console.log("[decryptWeComMsg] Starting decryption with encrypted:", encrypted);
-    const aesKey = Buffer.from(key + "=", "base64");
+    const aesKey = Buffer.from(WECOM_CALLBACK_AES_KEY + "=", "base64");
     const iv = aesKey.subarray(0, 16);
-    console.log("[decryptWeComMsg] AES Key:", aesKey.toString("hex"), "IV:", iv.toString("hex"));
-
     const decipher = crypto.createDecipheriv("aes-256-cbc", aesKey, iv);
     decipher.setAutoPadding(false);
     let decrypted = Buffer.concat([decipher.update(encrypted, "base64"), decipher.final()]);
-    console.log("[decryptWeComMsg] Decrypted buffer:", decrypted.toString("hex"));
 
     // Remove PKCS#7 padding
     const pad = decrypted[decrypted.length - 1];
     decrypted = decrypted.subarray(0, decrypted.length - pad);
-    console.log("[decryptWeComMsg] Buffer after padding removal:", decrypted.toString("hex"));
 
     // Format: random(16) + msg_len(4, big-endian) + msg + corpid
     const msgLen = decrypted.readUInt32BE(16);
     const msg = decrypted.subarray(20, 20 + msgLen).toString("utf-8");
-    console.log("[decryptWeComMsg] Extracted message:", msg);
 
     return msg;
   } catch (error) {
@@ -457,13 +477,25 @@ function decryptWeComMsg(encrypted: string, key: string): string {
 const outboxDir = path.resolve("src/outbox");
 fs.mkdirSync(outboxDir, { recursive: true });
 
-// Serve frontend files (production only)
-if (process.env.NODE_ENV === "production") {
-  const frontendDir = path.resolve("../web/dist");
-  app.use(express.static(frontendDir));
-  app.get("*", (_req, res) => {
-    res.sendFile(path.join(frontendDir, "index.html"));
-  });
+// Serve frontend static files in production
+const isProduction = process.env.NODE_ENV === "production";
+if (isProduction) {
+  // Try multiple paths: Docker build path, then local dev path
+  const webDistPaths = [
+    path.resolve("./web-dist"),  // Docker build (copied from frontend-builder)
+    path.resolve("../web/dist"), // Local development
+  ];
+  
+  for (const webDist of webDistPaths) {
+    if (fs.existsSync(webDist)) {
+      app.use(express.static(webDist));
+      app.get("*", (_req, res) => {
+        res.sendFile(path.join(webDist, "index.html"));
+      });
+      console.log(`Serving frontend from: ${webDist}`);
+      break;
+    }
+  }
 }
 
 const PORT = process.env.PORT ?? 8080;

@@ -1,5 +1,5 @@
 /**
- * Unified LLM Client — Routes to Claude, Qwen, or local Ollama.
+ * Unified LLM Client — Routes to Claude, Qwen, Gemini, or local Ollama.
  *
  * Three distinct roles, each with its own knobs:
  *
@@ -10,46 +10,111 @@
  *
  * Route logic:
  *   1. If LLM_PROVIDER is set → use that provider
- *   2. If ANTHROPIC_API_KEY is set → use Claude
- *   3. If QWEN_API_KEY is set → use Qwen
- *   4. Fall back to local Ollama (existing behavior)
+ *   2. If GEMINI_API_KEY is set → use Gemini (free with web search!)
+ *   3. If ANTHROPIC_API_KEY is set → use Claude
+ *   4. If QWEN_API_KEY is set → use Qwen
+ *   5. Fall back to local Ollama (existing behavior)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 
 // ── provider detection ──────────────────────────────────
 
-type LLMProvider = "claude" | "qwen" | "ollama";
+export type LLMProvider = "claude" | "qwen" | "gemini" | "ollama";
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const QWEN_API_KEY = process.env.QWEN_API_KEY;
-const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
+// Mutable settings (can be updated at runtime via API)
+let currentSettings = {
+  provider: (process.env.LLM_PROVIDER?.toLowerCase() || "") as LLMProvider | "",
+  anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
+  qwenKey: process.env.QWEN_API_KEY ?? "",
+  geminiKey: process.env.GEMINI_API_KEY ?? "",
+  ollamaUrl: process.env.OLLAMA_URL ?? "http://127.0.0.1:11434",
+  braveSearchKey: process.env.BRAVE_SEARCH_API_KEY ?? "",
+  kiwiKey: process.env.KIWI_API_KEY ?? "",
+};
+
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const TOGETHER_API_KEY = process.env.TOGETHER_API_KEY;
 
-function detectProvider(): LLMProvider {
-  const forced = process.env.LLM_PROVIDER?.toLowerCase();
-  if (forced === "claude" || forced === "qwen" || forced === "ollama") {
-    return forced;
+/**
+ * Update LLM settings at runtime (called from API endpoint)
+ */
+export function updateSettings(settings: {
+  llmProvider?: string;
+  anthropicKey?: string;
+  qwenKey?: string;
+  geminiKey?: string;
+  ollamaUrl?: string;
+  braveSearchKey?: string;
+  kiwiKey?: string;
+}) {
+  if (settings.llmProvider) currentSettings.provider = settings.llmProvider as LLMProvider;
+  if (settings.anthropicKey !== undefined) currentSettings.anthropicKey = settings.anthropicKey;
+  if (settings.qwenKey !== undefined) currentSettings.qwenKey = settings.qwenKey;
+  if (settings.geminiKey !== undefined) currentSettings.geminiKey = settings.geminiKey;
+  if (settings.ollamaUrl !== undefined) currentSettings.ollamaUrl = settings.ollamaUrl;
+  if (settings.braveSearchKey !== undefined) {
+    currentSettings.braveSearchKey = settings.braveSearchKey;
+    process.env.BRAVE_SEARCH_API_KEY = settings.braveSearchKey;
   }
-  if (ANTHROPIC_API_KEY) return "claude";
-  if (QWEN_API_KEY) return "qwen";
+  if (settings.kiwiKey !== undefined) {
+    currentSettings.kiwiKey = settings.kiwiKey;
+    process.env.KIWI_API_KEY = settings.kiwiKey;
+  }
+  console.log(`[llm] settings updated: provider=${currentSettings.provider}`);
+}
+
+export function getSettings() {
+  return { ...currentSettings };
+}
+
+function detectProvider(): LLMProvider {
+  const forced = currentSettings.provider;
+  // If provider is forced, validate it has required API key
+  if (forced === "gemini") {
+    if (currentSettings.geminiKey) return "gemini";
+    console.log("[llm] gemini requested but no API key, falling back to ollama");
+    return "ollama";
+  }
+  if (forced === "claude") {
+    if (currentSettings.anthropicKey) return "claude";
+    console.log("[llm] claude requested but no API key, falling back to ollama");
+    return "ollama";
+  }
+  if (forced === "qwen") {
+    if (currentSettings.qwenKey) return "qwen";
+    console.log("[llm] qwen requested but no API key, falling back to ollama");
+    return "ollama";
+  }
+  if (forced === "ollama") return "ollama";
+  
+  // Auto-detect based on available keys
+  if (currentSettings.geminiKey) return "gemini";
+  if (currentSettings.anthropicKey) return "claude";
+  if (currentSettings.qwenKey) return "qwen";
   return "ollama";
 }
 
-const PROVIDER = detectProvider();
-console.log(`[llm] provider=${PROVIDER}`);
+function getProvider(): LLMProvider {
+  return detectProvider();
+}
+
+const INITIAL_PROVIDER = detectProvider();
+console.log(`[llm] provider=${INITIAL_PROVIDER}`);
 
 // ── Anthropic client (lazy init) ────────────────────────
 
 let anthropicClient: Anthropic | null = null;
 
 function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    if (!ANTHROPIC_API_KEY) {
-      throw new Error("ANTHROPIC_API_KEY is required for Claude provider");
-    }
-    anthropicClient = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const apiKey = currentSettings.anthropicKey;
+  if (!apiKey) {
+    throw new Error("ANTHROPIC_API_KEY is required for Claude provider");
+  }
+  // Recreate client if key changed
+  if (!anthropicClient || (anthropicClient as any)._apiKey !== apiKey) {
+    anthropicClient = new Anthropic({ apiKey });
+    (anthropicClient as any)._apiKey = apiKey;
   }
   return anthropicClient;
 }
@@ -66,6 +131,8 @@ type RoleConfig = {
   claudeModel: string;
   /** Qwen model to use for this role */
   qwenModel: string;
+  /** Gemini model to use for this role */
+  geminiModel: string;
   /** Ollama model to use for this role */
   ollamaModel: string;
 };
@@ -84,6 +151,7 @@ const ROLE_CONFIG: Record<LLMRole, RoleConfig> = {
       "No prose, no markdown, no commentary. saveAs must be a plain variable name like msg or contact, never {{vars.xxx}}.",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
+    geminiModel: "gemini-2.0-flash",
     ollamaModel: PLANNER_OLLAMA_MODEL,
   },
   reporter: {
@@ -94,6 +162,7 @@ const ROLE_CONFIG: Record<LLMRole, RoleConfig> = {
       "不要编造信息。如果数据缺失，请说明。用中文回复。",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
+    geminiModel: "gemini-2.0-flash",
     ollamaModel: REPORTER_OLLAMA_MODEL,
   },
   styler: {
@@ -104,6 +173,7 @@ const ROLE_CONFIG: Record<LLMRole, RoleConfig> = {
       "绝对不要新增、删除或篡改事实。",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
+    geminiModel: "gemini-2.0-flash",
     ollamaModel: STYLER_OLLAMA_MODEL,
   },
   tool: {
@@ -113,6 +183,7 @@ const ROLE_CONFIG: Record<LLMRole, RoleConfig> = {
       "你是一个内容生成工具。直接输出请求的内容，用中文回复。不要解释、不要评论。",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
+    geminiModel: "gemini-2.0-flash",
     ollamaModel: "qwen2.5:1.5b",
   },
 };
@@ -182,7 +253,8 @@ async function callQwen(
   cfg: RoleConfig,
   forceJson?: boolean,
 ): Promise<string> {
-  if (!QWEN_API_KEY) {
+  const apiKey = currentSettings.qwenKey;
+  if (!apiKey) {
     throw new Error("QWEN_API_KEY is required for Qwen provider");
   }
 
@@ -206,7 +278,7 @@ async function callQwen(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${QWEN_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
     },
@@ -226,13 +298,87 @@ async function callQwen(
   return String(out).trim();
 }
 
+// ── Gemini provider (free with Google Search grounding!) ──
+
+async function callGemini(
+  systemPrompt: string,
+  userPrompt: string,
+  cfg: RoleConfig,
+  forceJson?: boolean,
+): Promise<string> {
+  const apiKey = currentSettings.geminiKey;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is required for Gemini provider");
+  }
+
+  // Gemini API endpoint
+  const model = cfg.geminiModel;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  // Build request with system instruction and grounding (Google Search)
+  const body: any = {
+    systemInstruction: {
+      parts: [{ text: systemPrompt }],
+    },
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: userPrompt }],
+      },
+    ],
+    generationConfig: {
+      temperature: cfg.temperature,
+      maxOutputTokens: cfg.maxTokens,
+    },
+    // Enable Google Search grounding for real-time web information
+    tools: [
+      {
+        googleSearch: {},
+      },
+    ],
+  };
+
+  // For JSON output, add response schema
+  if (forceJson) {
+    body.generationConfig.responseMimeType = "application/json";
+  }
+
+  const res = await fetchWithRetry(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  }, "gemini");
+
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Gemini API failed: ${res.status} ${t}`);
+  }
+
+  const json: any = await res.json();
+  
+  // Extract text from Gemini response format
+  const candidate = json?.candidates?.[0];
+  const parts = candidate?.content?.parts ?? [];
+  const textPart = parts.find((p: any) => p.text);
+  
+  if (!textPart?.text) {
+    throw new Error(`Gemini returned empty content: ${JSON.stringify(json).slice(0, 200)}`);
+  }
+  
+  return String(textPart.text).trim();
+}
+
 // ── Ollama provider (existing behavior preserved) ───────
 
 // Detect if using cloud API (OpenRouter, Together.ai, etc.)
-const isCloudAPI =
-  OLLAMA_URL.includes("openrouter.ai") ||
-  OLLAMA_URL.includes("together.xyz") ||
-  OLLAMA_URL.includes("api.together");
+function isCloudOllamaAPI(): boolean {
+  const url = currentSettings.ollamaUrl;
+  return url.includes("openrouter.ai") ||
+    url.includes("together.xyz") ||
+    url.includes("api.together");
+}
 
 async function callOllama(
   systemPrompt: string,
@@ -240,6 +386,9 @@ async function callOllama(
   cfg: RoleConfig,
   forceJson?: boolean,
 ): Promise<string> {
+  const ollamaUrl = currentSettings.ollamaUrl;
+  const isCloudAPI = isCloudOllamaAPI();
+  
   const body: any = {
     model: cfg.ollamaModel,
     messages: [
@@ -258,20 +407,20 @@ async function callOllama(
   // Build headers (add auth for cloud APIs)
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (isCloudAPI) {
-    if (OLLAMA_URL.includes("openrouter.ai") && OPENROUTER_API_KEY) {
+    if (ollamaUrl.includes("openrouter.ai") && OPENROUTER_API_KEY) {
       headers["Authorization"] = `Bearer ${OPENROUTER_API_KEY}`;
       headers["HTTP-Referer"] = "https://clawbot-demo.com";
       headers["X-Title"] = "Clawbot Demo";
-    } else if (OLLAMA_URL.includes("together.xyz") && TOGETHER_API_KEY) {
+    } else if (ollamaUrl.includes("together.xyz") && TOGETHER_API_KEY) {
       headers["Authorization"] = `Bearer ${TOGETHER_API_KEY}`;
     }
   }
 
-  let apiUrl = `${OLLAMA_URL}/api/chat`;
+  let apiUrl = `${ollamaUrl}/api/chat`;
   let requestBody: any = body;
 
   if (isCloudAPI) {
-    apiUrl = OLLAMA_URL.includes("openrouter.ai")
+    apiUrl = ollamaUrl.includes("openrouter.ai")
       ? "https://openrouter.ai/api/v1/chat/completions"
       : "https://api.together.xyz/v1/chat/completions";
 
@@ -333,6 +482,7 @@ export async function chatCompletion(opts: {
 }): Promise<{ content: string }> {
   const role = opts.role ?? "reporter";
   const cfg = ROLE_CONFIG[role];
+  const provider = getProvider();
 
   const systemPrompt = opts.system ?? cfg.systemPrompt;
   const userPrompt = opts.messages
@@ -346,20 +496,29 @@ export async function chatCompletion(opts: {
     maxTokens: opts.maxTokens ?? cfg.maxTokens,
   };
 
+  const modelName = provider === "claude" ? effectiveCfg.claudeModel 
+    : provider === "qwen" ? effectiveCfg.qwenModel 
+    : provider === "gemini" ? effectiveCfg.geminiModel
+    : effectiveCfg.ollamaModel;
+
   console.log(
-    `[llm] provider=${PROVIDER} role=${role} model=${PROVIDER === "claude" ? effectiveCfg.claudeModel : PROVIDER === "qwen" ? effectiveCfg.qwenModel : effectiveCfg.ollamaModel} temp=${effectiveCfg.temperature}`,
+    `[llm] provider=${provider} role=${role} model=${modelName} temp=${effectiveCfg.temperature}`,
   );
 
   let content: string;
 
-  switch (PROVIDER) {
+  switch (provider) {
     case "claude":
       content = await callClaude(systemPrompt, userPrompt, effectiveCfg);
       break;
     case "qwen":
       content = await callQwen(systemPrompt, userPrompt, effectiveCfg, opts.forceJson);
       break;
+    case "gemini":
+      content = await callGemini(systemPrompt, userPrompt, effectiveCfg, opts.forceJson);
+      break;
     case "ollama":
+    default:
       content = await callOllama(systemPrompt, userPrompt, effectiveCfg, opts.forceJson);
       break;
   }
@@ -416,6 +575,7 @@ export async function visionSummarize(imageUrl: string): Promise<string> {
     "and one clear action item. Keep it short and factual.";
 
   const ollamaModel = process.env.OLLAMA_PLANNER_MODEL ?? "qwen2.5:1.5b";
+  const ollamaUrl = currentSettings.ollamaUrl;
 
   const body = {
     model: ollamaModel,
@@ -431,7 +591,7 @@ export async function visionSummarize(imageUrl: string): Promise<string> {
     stream: false,
   };
 
-  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+  const res = await fetch(`${ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
