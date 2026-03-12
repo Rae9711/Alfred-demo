@@ -5,6 +5,7 @@ import ExecutionLog from "./components/ExecutionLog";
 import FinalAnswer from "./components/FinalAnswer";
 import AgentAvatarCard from "./components/AgentAvatarCard";
 import AuthScreen from "./components/AuthScreen";
+import APISettings, { loadAPIConfig, saveAPIConfig, type APIConfig } from "./components/APISettings";
 import { isAuthEnabled } from "./api/supabase";
 import {
   applyEvent,
@@ -468,6 +469,7 @@ function MainScreen({
   const [avatarState, setAvatarState] = useState<AvatarState>("idle");
   const [lastGainXp, setLastGainXp] = useState(0);
   const [rewardedRunIds, setRewardedRunIds] = useState<Set<string>>(new Set());
+  const [showAPISettings, setShowAPISettings] = useState(false);
 
   useEffect(() => {
     setAgentMeta(loadMeta(metaStorageKey));
@@ -922,6 +924,21 @@ function MainScreen({
             重新设置
           </button>
 
+          <button
+            onClick={() => setShowAPISettings(true)}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid #3B82F6",
+              background: "#EFF6FF",
+              fontSize: 12,
+              color: "#3B82F6",
+              cursor: "pointer",
+            }}
+          >
+            API 配置
+          </button>
+
           {onLogout && (
             <button
               onClick={onLogout}
@@ -940,6 +957,15 @@ function MainScreen({
           )}
         </div>
       </header>
+
+      {/* API Settings Modal */}
+      <APISettings
+        isOpen={showAPISettings}
+        onClose={() => setShowAPISettings(false)}
+        onSave={(config) => {
+          console.log("[app] API settings saved:", config.llmProvider);
+        }}
+      />
 
       {/* ── Main content ────────────────────────────────── */}
       <div style={{ maxWidth: 1020, margin: "0 auto", padding: "20px 24px" }}>
